@@ -1,0 +1,955 @@
+import { useState, useRef, useCallback } from "react";
+
+// ── CONSTANTES ──────────────────────────────────────────────────────
+const ESTADO_COLOR = { "Disponible": "#22c55e", "En negociación": "#f59e0b", "Reservado": "#3b82f6", "Vendido": "#8b5cf6", "Arrendado": "#06b6d4" };
+const TIPOS_PROP = ["Casa", "Apartamento", "Local", "Oficina", "Terreno", "Bodega", "Finca"];
+const ESTADOS_PROP = ["Disponible", "En negociación", "Reservado", "Vendido", "Arrendado"];
+const TIPOS_CLI = ["Comprador", "Vendedor", "Arrendatario", "Arrendador", "Inversionista"];
+const TIPOS_CITA = ["Visita", "Negociación", "Firma de contrato", "Seguimiento", "Avalúo"];
+
+const PROP_INICIAL = [
+  { id: 1, titulo: "Casa en Las Lomas", tipo: "Casa", operacion: "Venta", precio: 250000, estado: "Disponible", habitaciones: 4, banos: 3, m2: 180, parqueadero: 2, direccion: "Las Lomas #45, Zona Norte", clienteId: 1, descripcion: "Hermosa casa con jardín, cocina integral y acabados de lujo.", fotos: [], notas: [], ventas: [] },
+  { id: 2, titulo: "Apto Centro Histórico", tipo: "Apartamento", operacion: "Arriendo", precio: 1200, estado: "En negociación", habitaciones: 2, banos: 1, m2: 75, parqueadero: 1, direccion: "Calle Real #12, Centro", clienteId: 2, descripcion: "Apartamento remodelado, vista al parque, zona segura.", fotos: [], notas: [], ventas: [] },
+  { id: 3, titulo: "Local Comercial Norte", tipo: "Local", operacion: "Venta", precio: 180000, estado: "Vendido", habitaciones: 0, banos: 1, m2: 120, parqueadero: 3, direccion: "Av. Norte #88, Sector Comercial", clienteId: 3, descripcion: "Excelente ubicación comercial, alto flujo peatonal.", fotos: [], notas: [{ id: 1, texto: "Escritura firmada el 15/03", fecha: "2026-03-15" }], ventas: [] },
+];
+const CLI_INICIAL = [
+  { id: 1, nombre: "Juan Pérez", telefono: "555-1234", email: "juan@email.com", tipo: "Comprador", presupuesto: 300000, interes: "Casa con jardín", estado: "Activo", notas: [{ id: 1, texto: "Prefiere zona norte. Tiene preaprobación bancaria.", fecha: "2026-04-10" }] },
+  { id: 2, nombre: "María López", telefono: "555-5678", email: "maria@email.com", tipo: "Arrendatario", presupuesto: 1500, interes: "Apartamento 2 hab.", estado: "Activo", notas: [] },
+  { id: 3, nombre: "Carlos Ruiz", telefono: "555-9012", email: "carlos@email.com", tipo: "Vendedor", presupuesto: 0, interes: "Vender local comercial", estado: "Cerrado", notas: [] },
+];
+const CITAS_INICIAL = [
+  { id: 1, propiedadId: 1, clienteId: 1, fecha: "2026-05-10", hora: "10:00", tipo: "Visita", estado: "Pendiente", notas: "Primera visita al inmueble" },
+  { id: 2, propiedadId: 2, clienteId: 2, fecha: "2026-05-12", hora: "15:00", tipo: "Negociación", estado: "Confirmada", notas: "Revisar términos del contrato" },
+];
+
+// ── HOOK: persistencia local ──────────────────────────────────────
+function useLocalStorage(key, initial) {
+  const [val, setVal] = useState(() => {
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : initial; } catch { return initial; }
+  });
+  const set = useCallback(v => {
+    setVal(v);
+    try { localStorage.setItem(key, JSON.stringify(v)); } catch {}
+  }, [key]);
+  return [val, set];
+}
+
+// ── COMPONENTE PRINCIPAL ──────────────────────────────────────────
+export default function InmoGestionPro() {
+  const [props, setProps] = useLocalStorage("inmo_props", PROP_INICIAL);
+  const [clientes, setClientes] = useLocalStorage("inmo_clientes", CLI_INICIAL);
+  const [citas, setCitas] = useLocalStorage("inmo_citas", CITAS_INICIAL);
+  const [vista, setVista] = useState("dashboard");
+  const [notif, setNotif] = useState(null);
+  const [modal, setModal] = useState(null);
+  const [detalle, setDetalle] = useState(null);
+  const [busqueda, setBusqueda] = useState("");
+  const [filtroEstado, setFiltroEstado] = useState("Todos");
+  const [lightbox, setLightbox] = useState(null); // { fotos, idx }
+  const [imprimiendo, setImprimiendo] = useState(null);
+
+  const toast = (msg, tipo = "ok") => { setNotif({ msg, tipo }); setTimeout(() => setNotif(null), 3000); };
+
+  const getProp = id => props.find(p => p.id === id);
+  const getCli = id => clientes.find(c => c.id === id);
+
+  // ── FOTOS ──
+  const agregarFotos = (propId, archivos) => {
+    const readers = Array.from(archivos).map(file => new Promise(res => {
+      const r = new FileReader();
+      r.onload = e => res(e.target.result);
+      r.readAsDataURL(file);
+    }));
+    Promise.all(readers).then(base64s => {
+      setProps(prev => prev.map(p => p.id === propId ? { ...p, fotos: [...(p.fotos || []), ...base64s] } : p));
+      toast(`${base64s.length} foto${base64s.length > 1 ? "s" : ""} agregada${base64s.length > 1 ? "s" : ""} ✓`);
+    });
+  };
+
+  const eliminarFoto = (propId, idx) => {
+    setProps(prev => prev.map(p => p.id === propId ? { ...p, fotos: p.fotos.filter((_, i) => i !== idx) } : p));
+    toast("Foto eliminada");
+  };
+
+  // ── CRUD ──
+  const guardar = (tipo, data) => {
+    if (tipo === "propiedad") {
+      if (data.id) setProps(p => p.map(x => x.id === data.id ? { ...x, ...data } : x));
+      else setProps(p => [...p, { ...data, id: Date.now(), notas: [], fotos: [], ventas: [] }]);
+      toast("Propiedad guardada ✓");
+    } else if (tipo === "cliente") {
+      if (data.id) setClientes(c => c.map(x => x.id === data.id ? { ...x, ...data } : x));
+      else setClientes(c => [...c, { ...data, id: Date.now(), notas: [] }]);
+      toast("Cliente guardado ✓");
+    } else if (tipo === "cita") {
+      if (data.id) setCitas(c => c.map(x => x.id === data.id ? data : x));
+      else setCitas(c => [...c, { ...data, id: Date.now() }]);
+      toast("Cita guardada ✓");
+    }
+    setModal(null);
+  };
+
+  const eliminar = (tipo, id) => {
+    if (tipo === "propiedad") setProps(p => p.filter(x => x.id !== id));
+    else if (tipo === "cliente") setClientes(c => c.filter(x => x.id !== id));
+    else if (tipo === "cita") setCitas(c => c.filter(x => x.id !== id));
+    toast("Eliminado ✓");
+    setDetalle(null);
+  };
+
+  const agregarNota = (tipo, id, texto) => {
+    const nota = { id: Date.now(), texto, fecha: new Date().toISOString().split("T")[0] };
+    if (tipo === "propiedad") setProps(p => p.map(x => x.id === id ? { ...x, notas: [...x.notas, nota] } : x));
+    else setClientes(c => c.map(x => x.id === id ? { ...x, notas: [...x.notas, nota] } : x));
+    toast("Nota agregada ✓");
+  };
+
+  const propsFiltradas = props.filter(p =>
+    (filtroEstado === "Todos" || p.estado === filtroEstado) &&
+    (p.titulo.toLowerCase().includes(busqueda.toLowerCase()) || p.tipo.toLowerCase().includes(busqueda.toLowerCase()))
+  );
+
+  const citasPendientes = citas.filter(c => c.estado === "Pendiente").length;
+
+  return (
+    <div style={S.app}>
+      <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+      <style>{CSS}</style>
+
+      {/* SIDEBAR */}
+      <div style={S.sidebar} className="no-print">
+        <div style={S.logo}>
+          <div style={S.logoMark}>🏛</div>
+          <div>
+            <div style={S.logoName}>InmoGestión</div>
+            <div style={S.logoPro}>PRO · CRM Inmobiliario</div>
+          </div>
+        </div>
+        <div style={S.navSection}>
+          <div style={S.navLabel}>PRINCIPAL</div>
+          {[
+            { id: "dashboard", icon: "⬡", label: "Dashboard" },
+            { id: "propiedades", icon: "🏠", label: "Propiedades" },
+            { id: "clientes", icon: "👥", label: "Clientes" },
+            { id: "citas", icon: "📅", label: "Citas", badge: citasPendientes },
+          ].map(n => (
+            <button key={n.id} className="nav-btn" onClick={() => { setVista(n.id); setBusqueda(""); setDetalle(null); }}
+              style={{ ...S.navBtn, ...(vista === n.id ? S.navActive : {}) }}>
+              <span style={S.navIcon}>{n.icon}</span> {n.label}
+              {n.badge > 0 && <span style={S.navBadge}>{n.badge}</span>}
+            </button>
+          ))}
+        </div>
+        <div style={S.navSection}>
+          <div style={S.navLabel}>ANÁLISIS</div>
+          {[
+            { id: "graficas", icon: "📊", label: "Gráficas" },
+            { id: "reportes", icon: "📄", label: "Reportes" },
+          ].map(n => (
+            <button key={n.id} className="nav-btn" onClick={() => { setVista(n.id); setDetalle(null); }}
+              style={{ ...S.navBtn, ...(vista === n.id ? S.navActive : {}) }}>
+              <span style={S.navIcon}>{n.icon}</span> {n.label}
+            </button>
+          ))}
+        </div>
+        <div style={S.sideStats}>
+          <div style={S.sideStatItem}><span style={S.sideStatNum}>{props.length}</span><span style={S.sideStatLbl}>Propiedades</span></div>
+          <div style={S.sideStatDiv} />
+          <div style={S.sideStatItem}><span style={S.sideStatNum}>{clientes.length}</span><span style={S.sideStatLbl}>Clientes</span></div>
+        </div>
+      </div>
+
+      {/* MAIN */}
+      <div style={S.main}>
+        {/* TOPBAR */}
+        <div style={S.topbar} className="no-print">
+          <div>
+            <div style={S.pageTitle}>
+              {{ dashboard: "Panel Principal", propiedades: "Propiedades", clientes: "Clientes", citas: "Agenda", graficas: "Análisis", reportes: "Reportes" }[vista]}
+            </div>
+            <div style={S.pageSub}>{new Date().toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
+          </div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            {["propiedades", "clientes", "citas"].includes(vista) && !detalle && (
+              <>
+                <input style={S.search} placeholder="🔍 Buscar..." value={busqueda} onChange={e => setBusqueda(e.target.value)} />
+                <button className="btn-primary" style={S.btnPrimary}
+                  onClick={() => setModal({ tipo: vista === "propiedades" ? "propiedad" : vista === "clientes" ? "cliente" : "cita", data: null })}>
+                  + Nuevo
+                </button>
+              </>
+            )}
+            {detalle && <button style={S.btnBack} onClick={() => setDetalle(null)}>← Volver</button>}
+          </div>
+        </div>
+
+        {notif && <div style={{ ...S.notif, background: notif.tipo === "err" ? "#dc2626" : "#16a34a" }}>{notif.msg}</div>}
+
+        <div style={S.content}>
+
+          {/* ══ DASHBOARD ══ */}
+          {vista === "dashboard" && (
+            <div style={{ animation: "fadeIn .4s ease" }}>
+              <div style={S.kpiGrid}>
+                {[
+                  { label: "Propiedades", val: props.length, sub: `${props.filter(p => p.estado === "Disponible").length} disponibles`, icon: "🏠", color: "#3b82f6" },
+                  { label: "Clientes activos", val: clientes.filter(c => c.estado === "Activo").length, sub: `${clientes.length} total`, icon: "👥", color: "#22c55e" },
+                  { label: "Citas pendientes", val: citasPendientes, sub: `${citas.length} agendadas`, icon: "📅", color: "#f59e0b" },
+                  { label: "Con fotos", val: props.filter(p => p.fotos?.length > 0).length, sub: "inmuebles fotografiados", icon: "📸", color: "#a855f7" },
+                ].map((k, i) => (
+                  <div key={i} className="card-hover" style={{ ...S.kpi, borderTop: `3px solid ${k.color}` }}>
+                    <div style={{ fontSize: 32 }}>{k.icon}</div>
+                    <div style={{ ...S.kpiVal, color: k.color }}>{k.val}</div>
+                    <div style={S.kpiLabel}>{k.label}</div>
+                    <div style={S.kpiSub}>{k.sub}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={S.dashRow}>
+                <div style={S.dashCard}>
+                  <div style={S.cardHead}>
+                    <span style={S.cardTitle}>🏠 Propiedades Recientes</span>
+                    <button style={S.linkBtn} onClick={() => setVista("propiedades")}>Ver todas →</button>
+                  </div>
+                  {props.slice(0, 4).map(p => (
+                    <div key={p.id} style={S.listRow} onClick={() => { setVista("propiedades"); setDetalle({ tipo: "propiedad", id: p.id }); }}>
+                      <div style={{ width: 48, height: 48, borderRadius: 10, overflow: "hidden", background: "#0f172a", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        {p.fotos?.length > 0
+                          ? <img src={p.fotos[0]} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                          : <span style={{ fontSize: 22 }}>🏠</span>}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={S.listTitle}>{p.titulo}</div>
+                        <div style={S.listSub}>{p.tipo} · {p.m2}m²{p.habitaciones > 0 ? ` · ${p.habitaciones} hab.` : ""}</div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ ...S.pill, background: ESTADO_COLOR[p.estado] + "25", color: ESTADO_COLOR[p.estado] }}>{p.estado}</div>
+                        <div style={S.precio}>${Number(p.precio).toLocaleString()}{p.operacion === "Arriendo" ? "/mes" : ""}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={S.dashCard}>
+                  <div style={S.cardHead}>
+                    <span style={S.cardTitle}>📅 Próximas Citas</span>
+                    <button style={S.linkBtn} onClick={() => setVista("citas")}>Ver agenda →</button>
+                  </div>
+                  {citas.map(c => {
+                    const p = getProp(c.propiedadId); const cl = getCli(c.clienteId);
+                    return (
+                      <div key={c.id} style={S.listRow}>
+                        <div style={S.fechaBadge}>
+                          <div style={S.fechaDia}>{c.fecha.split("-")[2]}</div>
+                          <div style={S.fechaMes}>{["","En","Fe","Ma","Ab","My","Jn","Jl","Ag","Se","Oc","No","Di"][+c.fecha.split("-")[1]]}</div>
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={S.listTitle}>{p?.titulo || "—"}</div>
+                          <div style={S.listSub}>{cl?.nombre} · {c.hora} · {c.tipo}</div>
+                        </div>
+                        <div style={{ ...S.pill, background: c.estado === "Confirmada" ? "#22c55e25" : "#f59e0b25", color: c.estado === "Confirmada" ? "#22c55e" : "#f59e0b" }}>{c.estado}</div>
+                      </div>
+                    );
+                  })}
+                  {citas.length === 0 && <div style={{ color: "#475569", fontSize: 13 }}>Sin citas agendadas.</div>}
+                </div>
+              </div>
+              <div style={S.dashCard}>
+                <div style={S.cardTitle}>📊 Estado del Portafolio</div>
+                <div style={{ display: "flex", gap: 16, marginTop: 16, flexWrap: "wrap" }}>
+                  {ESTADOS_PROP.map(est => {
+                    const cnt = props.filter(p => p.estado === est).length;
+                    const pct = props.length ? Math.round(cnt / props.length * 100) : 0;
+                    return (
+                      <div key={est} style={{ flex: 1, minWidth: 100 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#94a3b8", marginBottom: 6 }}>
+                          <span>{est}</span><span style={{ color: ESTADO_COLOR[est], fontWeight: 700 }}>{cnt}</span>
+                        </div>
+                        <div style={{ height: 8, background: "#1e293b", borderRadius: 4 }}>
+                          <div style={{ height: "100%", width: `${pct}%`, background: ESTADO_COLOR[est], borderRadius: 4, transition: "width .8s" }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ══ PROPIEDADES LISTA ══ */}
+          {vista === "propiedades" && !detalle && (
+            <div style={{ animation: "fadeIn .3s ease" }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+                {["Todos", ...ESTADOS_PROP].map(e => (
+                  <button key={e} onClick={() => setFiltroEstado(e)}
+                    style={{ ...S.filterBtn, ...(filtroEstado === e ? { background: ESTADO_COLOR[e] || "#3b82f6", color: "#fff", border: "none" } : {}) }}>
+                    {e}
+                  </button>
+                ))}
+              </div>
+              <div style={S.propGrid}>
+                {propsFiltradas.map(p => (
+                  <div key={p.id} className="card-hover" style={S.propCard} onClick={() => setDetalle({ tipo: "propiedad", id: p.id })}>
+                    <div style={{ ...S.propBanner, background: "linear-gradient(135deg,#0f2744,#1a3d6e)", position: "relative", overflow: "hidden" }}>
+                      {p.fotos?.length > 0
+                        ? <img src={p.fotos[0]} alt={p.titulo} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        : <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, color: "#334155" }}>
+                            <span style={{ fontSize: 52 }}>🏠</span>
+                            <span style={{ fontSize: 11 }}>Sin fotos</span>
+                          </div>
+                      }
+                      <div style={{ ...S.propEstado, background: ESTADO_COLOR[p.estado] }}>{p.estado}</div>
+                      <div style={{ ...S.propOp, background: p.operacion === "Venta" ? "#3b82f6" : "#06b6d4" }}>{p.operacion}</div>
+                      {p.fotos?.length > 0 && (
+                        <div style={{ position: "absolute", bottom: 8, right: 8, background: "rgba(0,0,0,.6)", borderRadius: 6, padding: "2px 8px", fontSize: 11, color: "#fff" }}>
+                          📸 {p.fotos.length}
+                        </div>
+                      )}
+                    </div>
+                    <div style={S.propBody}>
+                      <div style={S.propTit}>{p.titulo}</div>
+                      <div style={S.propAddr}>📍 {p.direccion}</div>
+                      <div style={S.propTags}>
+                        <span style={S.tag}>🏗 {p.tipo}</span>
+                        <span style={S.tag}>📐 {p.m2}m²</span>
+                        {p.habitaciones > 0 && <span style={S.tag}>🛏 {p.habitaciones}</span>}
+                        {p.banos > 0 && <span style={S.tag}>🚿 {p.banos}</span>}
+                      </div>
+                      <div style={S.propBottom}>
+                        <span style={S.propPrecio}>${Number(p.precio).toLocaleString()}{p.operacion === "Arriendo" ? <span style={{ fontSize: 12, color: "#64748b" }}>/mes</span> : ""}</span>
+                        <span style={S.viewBtn}>Ver detalle →</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <div className="card-hover" style={{ ...S.propCard, border: "2px dashed #1e3a5f", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 280 }}
+                  onClick={() => setModal({ tipo: "propiedad", data: null })}>
+                  <div style={{ textAlign: "center", color: "#334155" }}>
+                    <div style={{ fontSize: 40 }}>+</div>
+                    <div style={{ marginTop: 8, fontWeight: 600 }}>Agregar propiedad</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ══ DETALLE PROPIEDAD ══ */}
+          {vista === "propiedades" && detalle?.tipo === "propiedad" && (() => {
+            const p = getProp(detalle.id);
+            if (!p) return null;
+            const cli = getCli(p.clienteId);
+            return <DetallePropiedad p={p} cli={cli} onEdit={() => setModal({ tipo: "propiedad", data: p })} onDelete={() => eliminar("propiedad", p.id)} onAddNota={(txt) => agregarNota("propiedad", p.id, txt)} onAddFotos={(files) => agregarFotos(p.id, files)} onDeleteFoto={(idx) => eliminarFoto(p.id, idx)} onLightbox={(idx) => setLightbox({ fotos: p.fotos, idx })} onPrint={() => { setImprimiendo(p); setTimeout(() => { window.print(); setImprimiendo(null); }, 300); }} S={S} />;
+          })()}
+
+          {/* ══ CLIENTES LISTA ══ */}
+          {vista === "clientes" && !detalle && (
+            <div style={{ animation: "fadeIn .3s ease" }}>
+              <div style={S.cliGrid}>
+                {clientes.filter(c => c.nombre.toLowerCase().includes(busqueda.toLowerCase())).map(c => (
+                  <div key={c.id} className="card-hover" style={S.cliCard} onClick={() => setDetalle({ tipo: "cliente", id: c.id })}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+                        <div style={S.avatar}>{c.nombre[0]}</div>
+                        <div>
+                          <div style={{ fontWeight: 700, color: "#f1f5f9", fontSize: 16 }}>{c.nombre}</div>
+                          <div style={{ fontSize: 12, color: "#64748b" }}>{c.telefono}</div>
+                        </div>
+                      </div>
+                      <div style={{ ...S.pill, background: c.estado === "Activo" ? "#22c55e25" : "#64748b25", color: c.estado === "Activo" ? "#22c55e" : "#64748b" }}>{c.estado}</div>
+                    </div>
+                    <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ ...S.tag, background: "#3b82f620", color: "#60a5fa" }}>{c.tipo}</span>
+                      {c.presupuesto > 0 && <span style={S.tag}>💰 ${Number(c.presupuesto).toLocaleString()}</span>}
+                      {c.interes && <span style={S.tag}>🎯 {c.interes}</span>}
+                    </div>
+                    <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ fontSize: 12, color: "#475569" }}>{c.notas.length} nota{c.notas.length !== 1 ? "s" : ""}</div>
+                      <span style={{ color: "#3b82f6", fontSize: 13 }}>Ver perfil →</span>
+                    </div>
+                  </div>
+                ))}
+                <div className="card-hover" style={{ ...S.cliCard, border: "2px dashed #1e3a5f", background: "transparent", alignItems: "center", justifyContent: "center", display: "flex", cursor: "pointer" }}
+                  onClick={() => setModal({ tipo: "cliente", data: null })}>
+                  <div style={{ textAlign: "center", color: "#334155" }}>
+                    <div style={{ fontSize: 36 }}>+</div>
+                    <div style={{ marginTop: 6, fontWeight: 600 }}>Nuevo cliente</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ══ DETALLE CLIENTE ══ */}
+          {vista === "clientes" && detalle?.tipo === "cliente" && (() => {
+            const c = getCli(detalle.id);
+            if (!c) return null;
+            const propAsoc = props.filter(p => p.clienteId === c.id);
+            return <DetalleCliente c={c} propAsoc={propAsoc} onEdit={() => setModal({ tipo: "cliente", data: c })} onDelete={() => eliminar("cliente", c.id)} onAddNota={(txt) => agregarNota("cliente", c.id, txt)} onVerProp={(id) => { setVista("propiedades"); setDetalle({ tipo: "propiedad", id }); }} S={S} />;
+          })()}
+
+          {/* ══ CITAS ══ */}
+          {vista === "citas" && (
+            <div style={{ animation: "fadeIn .3s ease" }}>
+              <div style={S.citasGrid}>
+                {citas.map(c => {
+                  const p = getProp(c.propiedadId); const cl = getCli(c.clienteId);
+                  const bColor = { "Pendiente": "#f59e0b", "Confirmada": "#22c55e", "Cancelada": "#ef4444" }[c.estado];
+                  return (
+                    <div key={c.id} style={{ ...S.dashCard, borderLeft: `4px solid ${bColor}` }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 1 }}>{c.tipo}</div>
+                          <div style={{ fontSize: 18, fontWeight: 700, color: "#f1f5f9", marginTop: 4 }}>{p?.titulo || "Propiedad"}</div>
+                        </div>
+                        <div style={{ ...S.pill, background: bColor + "25", color: bColor }}>{c.estado}</div>
+                      </div>
+                      <div style={{ display: "flex", gap: 16, marginTop: 12, fontSize: 13, color: "#64748b", flexWrap: "wrap" }}>
+                        <span>👤 {cl?.nombre || "—"}</span>
+                        <span>📅 {c.fecha}</span>
+                        <span>⏰ {c.hora}</span>
+                      </div>
+                      {c.notas && <div style={{ marginTop: 10, fontSize: 13, color: "#475569", background: "#0f172a", padding: "8px 12px", borderRadius: 8 }}>📝 {c.notas}</div>}
+                      <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+                        <button style={S.btnSm} onClick={() => setModal({ tipo: "cita", data: c })}>✏️ Editar</button>
+                        <button style={{ ...S.btnSm, borderColor: "#7f1d1d", color: "#ef4444" }} onClick={() => eliminar("cita", c.id)}>🗑</button>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{ ...S.dashCard, border: "2px dashed #1e3a5f", background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", minHeight: 140 }}
+                  onClick={() => setModal({ tipo: "cita", data: null })}>
+                  <div style={{ textAlign: "center", color: "#334155" }}>
+                    <div style={{ fontSize: 36 }}>+</div>
+                    <div style={{ fontWeight: 600, marginTop: 6 }}>Agendar cita</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ══ GRÁFICAS ══ */}
+          {vista === "graficas" && (
+            <div style={{ animation: "fadeIn .3s ease" }}>
+              <div style={S.dashRow}>
+                <div style={S.dashCard}>
+                  <div style={S.cardTitle}>🏠 Propiedades por tipo</div>
+                  <div style={{ marginTop: 20 }}>
+                    {TIPOS_PROP.map(tipo => {
+                      const cnt = props.filter(p => p.tipo === tipo).length;
+                      const pct = props.length ? (cnt / props.length * 100) : 0;
+                      if (!cnt) return null;
+                      return (
+                        <div key={tipo} style={{ marginBottom: 14 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#94a3b8", marginBottom: 6 }}>
+                            <span>{tipo}</span><span style={{ fontWeight: 700, color: "#3b82f6" }}>{cnt}</span>
+                          </div>
+                          <div style={{ height: 10, background: "#1e293b", borderRadius: 5 }}>
+                            <div style={{ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg,#1e3a5f,#3b82f6)", borderRadius: 5, transition: "width 1s" }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div style={S.dashCard}>
+                  <div style={S.cardTitle}>📊 Estado del portafolio</div>
+                  <div style={{ marginTop: 20 }}>
+                    {ESTADOS_PROP.map(est => {
+                      const cnt = props.filter(p => p.estado === est).length;
+                      const pct = props.length ? (cnt / props.length * 100) : 0;
+                      return (
+                        <div key={est} style={{ marginBottom: 14 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#94a3b8", marginBottom: 6 }}>
+                            <span>{est}</span><span style={{ fontWeight: 700, color: ESTADO_COLOR[est] }}>{cnt} ({Math.round(pct)}%)</span>
+                          </div>
+                          <div style={{ height: 10, background: "#1e293b", borderRadius: 5 }}>
+                            <div style={{ height: "100%", width: `${pct}%`, background: ESTADO_COLOR[est], borderRadius: 5, transition: "width 1s" }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+              <div style={S.dashCard}>
+                <div style={S.cardTitle}>👥 Clientes por tipo</div>
+                <div style={{ display: "flex", gap: 16, marginTop: 20, flexWrap: "wrap" }}>
+                  {TIPOS_CLI.map(tipo => {
+                    const cnt = clientes.filter(c => c.tipo === tipo).length;
+                    const colors = { "Comprador": "#3b82f6", "Vendedor": "#22c55e", "Arrendatario": "#06b6d4", "Arrendador": "#f59e0b", "Inversionista": "#a855f7" };
+                    return (
+                      <div key={tipo} style={{ flex: 1, minWidth: 100, background: "#0f172a", borderRadius: 12, padding: "16px", textAlign: "center", border: `1px solid ${colors[tipo]}30` }}>
+                        <div style={{ fontSize: 28, fontWeight: 800, color: colors[tipo], fontFamily: "Playfair Display, serif" }}>{cnt}</div>
+                        <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>{tipo}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ══ REPORTES ══ */}
+          {vista === "reportes" && (
+            <div style={{ animation: "fadeIn .3s ease" }}>
+              <div style={{ ...S.dashCard, marginBottom: 18 }}>
+                <div style={S.cardTitle}>🖨 Fichas de propiedades</div>
+                <div style={{ color: "#64748b", fontSize: 13, marginTop: 6, marginBottom: 16 }}>Hacé clic en una propiedad para imprimir su ficha completa.</div>
+                {props.map(p => (
+                  <div key={p.id} style={{ ...S.listRow, cursor: "pointer" }} onClick={() => { setImprimiendo(p); setTimeout(() => { window.print(); setImprimiendo(null); }, 300); }}>
+                    <div style={{ width: 44, height: 44, borderRadius: 8, overflow: "hidden", background: "#0f172a", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {p.fotos?.length > 0 ? <img src={p.fotos[0]} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span style={{ fontSize: 20 }}>🏠</span>}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={S.listTitle}>{p.titulo}</div>
+                      <div style={S.listSub}>{p.tipo} · {p.direccion}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <div style={{ ...S.pill, background: ESTADO_COLOR[p.estado] + "25", color: ESTADO_COLOR[p.estado] }}>{p.estado}</div>
+                      <button style={{ ...S.btnPrimary, background: "#7c3aed", padding: "6px 14px", fontSize: 12 }}>🖨 Imprimir</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+        </div>
+      </div>
+
+      {/* MODALES */}
+      {modal && <ModalForm modal={modal} props={props} clientes={clientes} onSave={guardar} onClose={() => setModal(null)} S={S} />}
+
+      {/* LIGHTBOX */}
+      {lightbox && (
+        <Lightbox fotos={lightbox.fotos} idx={lightbox.idx} onClose={() => setLightbox(null)} onChange={idx => setLightbox(l => ({ ...l, idx }))} />
+      )}
+
+      {/* FICHA IMPRESIÓN */}
+      {imprimiendo && (
+        <div style={{ display: "none" }} className="print-only">
+          <PrintFicha prop={imprimiendo} cliente={getCli(imprimiendo.clienteId)} />
+        </div>
+      )}
+
+      <style>{`@media print { body > * { display: none !important; } .print-only { display: block !important; } }`}</style>
+    </div>
+  );
+}
+
+// ── DETALLE PROPIEDAD (componente separado) ───────────────────────
+function DetallePropiedad({ p, cli, onEdit, onDelete, onAddNota, onAddFotos, onDeleteFoto, onLightbox, onPrint, S }) {
+  const [nuevaNota, setNuevaNota] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef();
+
+  const handleDrop = e => {
+    e.preventDefault(); setDragOver(false);
+    const files = [...e.dataTransfer.files].filter(f => f.type.startsWith("image/"));
+    if (files.length) onAddFotos(files);
+  };
+
+  return (
+    <div style={{ animation: "fadeIn .3s ease" }}>
+      <div style={S.detalleGrid}>
+        {/* Columna izquierda */}
+        <div>
+          {/* GALERÍA */}
+          <div style={{ ...S.dashCard, padding: 0, overflow: "hidden" }}>
+            {/* Imagen principal */}
+            <div style={{ height: 220, background: "#0f172a", position: "relative", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              {p.fotos?.length > 0
+                ? <img src={p.fotos[0]} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", cursor: "zoom-in" }} onClick={() => onLightbox(0)} />
+                : <div style={{ textAlign: "center", color: "#334155" }}><div style={{ fontSize: 64 }}>🏠</div><div style={{ fontSize: 13, marginTop: 8 }}>Sin fotos aún</div></div>
+              }
+              <div style={{ position: "absolute", top: 10, right: 10 }}>
+                <div style={{ ...S.pill, background: ESTADO_COLOR[p.estado], color: "#fff" }}>{p.estado}</div>
+              </div>
+            </div>
+
+            {/* Thumbnails */}
+            <div style={{ padding: "14px 16px" }}>
+              <div style={{ fontWeight: 700, color: "#e2e8f0", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>📸 Galería ({p.fotos?.length || 0} fotos)</span>
+                <button style={{ ...S.btnSm, fontSize: 11 }} onClick={() => inputRef.current?.click()}>+ Agregar</button>
+              </div>
+
+              {/* Drop zone */}
+              <div
+                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+                onClick={() => inputRef.current?.click()}
+                style={{ border: `2px dashed ${dragOver ? "#3b82f6" : "#1e3a5f"}`, borderRadius: 10, padding: "12px", textAlign: "center", cursor: "pointer", background: dragOver ? "#3b82f610" : "transparent", transition: "all .2s", marginBottom: 12 }}>
+                <div style={{ fontSize: 11, color: dragOver ? "#3b82f6" : "#334155" }}>
+                  {dragOver ? "📂 Suelta aquí las fotos" : "📁 Arrastrá fotos aquí o hacé clic"}
+                </div>
+              </div>
+              <input ref={inputRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={e => { onAddFotos(e.target.files); e.target.value = ""; }} />
+
+              {/* Grid de fotos */}
+              {p.fotos?.length > 0 && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6 }}>
+                  {p.fotos.map((f, i) => (
+                    <div key={i} style={{ position: "relative", aspectRatio: "1", borderRadius: 8, overflow: "hidden", border: "2px solid #1e293b", cursor: "zoom-in" }} className="foto-thumb">
+                      <img src={f} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} onClick={() => onLightbox(i)} />
+                      <button className="foto-del" onClick={e => { e.stopPropagation(); onDeleteFoto(i); }}
+                        style={{ position: "absolute", top: 3, right: 3, background: "rgba(239,68,68,.9)", border: "none", borderRadius: "50%", width: 20, height: 20, cursor: "pointer", color: "#fff", fontSize: 11, display: "none", alignItems: "center", justifyContent: "center", lineHeight: 1 }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Cliente asociado */}
+          {cli && (
+            <div style={{ ...S.dashCard, marginTop: 16 }}>
+              <div style={{ fontWeight: 700, color: "#e2e8f0", marginBottom: 12 }}>👤 Cliente asociado</div>
+              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                <div style={S.avatar}>{cli.nombre[0]}</div>
+                <div>
+                  <div style={{ fontWeight: 600, color: "#f1f5f9" }}>{cli.nombre}</div>
+                  <div style={{ fontSize: 13, color: "#64748b" }}>{cli.telefono} · {cli.email}</div>
+                  <div style={{ ...S.pill, background: "#3b82f625", color: "#3b82f6", marginTop: 6, display: "inline-block" }}>{cli.tipo}</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Columna derecha */}
+        <div>
+          <div style={S.dashCard}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: "#f1f5f9", fontFamily: "Playfair Display, serif" }}>{p.titulo}</div>
+                <div style={{ color: "#64748b", marginTop: 4 }}>📍 {p.direccion}</div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 28, fontWeight: 800, color: "#60a5fa" }}>${Number(p.precio).toLocaleString()}</div>
+                <div style={{ color: "#64748b", fontSize: 13 }}>{p.operacion}</div>
+              </div>
+            </div>
+            <div style={{ ...S.propTags, marginTop: 16 }}>
+              <span style={S.tag}>🏗 {p.tipo}</span>
+              <span style={S.tag}>📐 {p.m2}m²</span>
+              {p.habitaciones > 0 && <span style={S.tag}>🛏 {p.habitaciones} hab.</span>}
+              {p.banos > 0 && <span style={S.tag}>🚿 {p.banos} baños</span>}
+              {p.parqueadero > 0 && <span style={S.tag}>🚗 {p.parqueadero} parq.</span>}
+            </div>
+            {p.descripcion && <div style={{ marginTop: 16, color: "#94a3b8", lineHeight: 1.7, fontSize: 14 }}>{p.descripcion}</div>}
+            <div style={{ display: "flex", gap: 10, marginTop: 20, flexWrap: "wrap" }}>
+              <button style={S.btnPrimary} onClick={onEdit}>✏️ Editar</button>
+              <button style={{ ...S.btnPrimary, background: "#7c3aed" }} onClick={onPrint}>🖨 Imprimir Ficha</button>
+              <button style={S.btnDanger} onClick={onDelete}>🗑 Eliminar</button>
+            </div>
+          </div>
+
+          {/* Notas */}
+          <div style={{ ...S.dashCard, marginTop: 16 }}>
+            <div style={{ fontWeight: 700, color: "#e2e8f0", marginBottom: 14 }}>💬 Notas internas</div>
+            {p.notas.length === 0 && <div style={{ color: "#475569", fontSize: 13, marginBottom: 12 }}>Sin notas aún.</div>}
+            <div style={{ maxHeight: 240, overflowY: "auto" }}>
+              {p.notas.map(n => (
+                <div key={n.id} style={S.notaItem}>
+                  <div style={{ fontSize: 13, color: "#e2e8f0" }}>{n.texto}</div>
+                  <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>{n.fecha}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <input style={{ ...S.input, flex: 1 }} placeholder="Agregar nota..."
+                onKeyDown={e => { if (e.key === "Enter" && e.target.value) { onAddNota(e.target.value); e.target.value = ""; } }} />
+              <button style={S.btnPrimary} onClick={e => {
+                const inp = e.target.previousSibling;
+                if (inp.value) { onAddNota(inp.value); inp.value = ""; }
+              }}>+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── DETALLE CLIENTE ───────────────────────────────────────────────
+function DetalleCliente({ c, propAsoc, onEdit, onDelete, onAddNota, onVerProp, S }) {
+  return (
+    <div style={{ animation: "fadeIn .3s ease" }}>
+      <div style={S.detalleGrid}>
+        <div>
+          <div style={S.dashCard}>
+            <div style={{ textAlign: "center", padding: "20px 0" }}>
+              <div style={{ ...S.avatar, width: 72, height: 72, fontSize: 30, margin: "0 auto 16px" }}>{c.nombre[0]}</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "#f1f5f9", fontFamily: "Playfair Display, serif" }}>{c.nombre}</div>
+              <div style={{ ...S.pill, background: "#3b82f625", color: "#3b82f6", marginTop: 10, display: "inline-block" }}>{c.tipo}</div>
+            </div>
+            <div style={{ borderTop: "1px solid #1e293b", paddingTop: 16 }}>
+              {[["📞", c.telefono], ["✉️", c.email], ["💰", c.presupuesto ? `$${Number(c.presupuesto).toLocaleString()}` : "No especificado"], ["🎯", c.interes || "No especificado"]].map(([icon, val], i) => (
+                <div key={i} style={{ display: "flex", gap: 10, marginBottom: 10, fontSize: 14, color: "#94a3b8" }}>
+                  <span>{icon}</span><span>{val}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button style={S.btnPrimary} onClick={onEdit}>✏️ Editar</button>
+              <button style={S.btnDanger} onClick={onDelete}>🗑</button>
+            </div>
+          </div>
+          <div style={{ ...S.dashCard, marginTop: 16 }}>
+            <div style={{ fontWeight: 700, color: "#e2e8f0", marginBottom: 12 }}>🏠 Propiedades asociadas ({propAsoc.length})</div>
+            {propAsoc.length === 0 && <div style={{ color: "#475569", fontSize: 13 }}>Sin propiedades asociadas.</div>}
+            {propAsoc.map(p => (
+              <div key={p.id} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid #1e293b", cursor: "pointer" }} onClick={() => onVerProp(p.id)}>
+                <div style={{ width: 36, height: 36, borderRadius: 6, overflow: "hidden", background: "#0f172a", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {p.fotos?.length > 0 ? <img src={p.fotos[0]} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span style={{ fontSize: 16 }}>🏠</span>}
+                </div>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: "#e2e8f0" }}>{p.titulo}</div>
+                  <div style={{ fontSize: 12, color: "#64748b" }}>${Number(p.precio).toLocaleString()} · {p.estado}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div style={S.dashCard}>
+          <div style={{ fontWeight: 700, color: "#e2e8f0", marginBottom: 14 }}>💬 Historial de notas</div>
+          {c.notas.length === 0 && <div style={{ color: "#475569", fontSize: 13, marginBottom: 16 }}>Sin notas aún.</div>}
+          <div style={{ maxHeight: 380, overflowY: "auto" }}>
+            {c.notas.map(n => (
+              <div key={n.id} style={S.notaItem}>
+                <div style={{ fontSize: 13, color: "#e2e8f0" }}>{n.texto}</div>
+                <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>{n.fecha}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <input style={{ ...S.input, flex: 1 }} placeholder="Escribe una nota..."
+              onKeyDown={e => { if (e.key === "Enter" && e.target.value) { onAddNota(e.target.value); e.target.value = ""; } }} />
+            <button style={S.btnPrimary} onClick={e => {
+              const inp = e.target.previousSibling;
+              if (inp.value) { onAddNota(inp.value); inp.value = ""; }
+            }}>Agregar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── LIGHTBOX ─────────────────────────────────────────────────────
+function Lightbox({ fotos, idx, onClose, onChange }) {
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.92)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <button onClick={onClose} style={{ position: "absolute", top: 20, right: 24, background: "none", border: "none", color: "#fff", fontSize: 32, cursor: "pointer" }}>✕</button>
+      {fotos.length > 1 && (
+        <>
+          <button onClick={e => { e.stopPropagation(); onChange((idx - 1 + fotos.length) % fotos.length); }}
+            style={{ position: "absolute", left: 20, background: "rgba(255,255,255,.1)", border: "none", color: "#fff", fontSize: 28, cursor: "pointer", borderRadius: 8, padding: "8px 16px" }}>‹</button>
+          <button onClick={e => { e.stopPropagation(); onChange((idx + 1) % fotos.length); }}
+            style={{ position: "absolute", right: 20, background: "rgba(255,255,255,.1)", border: "none", color: "#fff", fontSize: 28, cursor: "pointer", borderRadius: 8, padding: "8px 16px" }}>›</button>
+        </>
+      )}
+      <img src={fotos[idx]} alt="" onClick={e => e.stopPropagation()} style={{ maxWidth: "90vw", maxHeight: "88vh", objectFit: "contain", borderRadius: 12 }} />
+      <div style={{ position: "absolute", bottom: 20, color: "#fff", fontSize: 13, opacity: .6 }}>{idx + 1} / {fotos.length}</div>
+    </div>
+  );
+}
+
+// ── MODAL FORM ───────────────────────────────────────────────────
+function ModalForm({ modal, props, clientes, onSave, onClose, S }) {
+  const blank = {
+    propiedad: { titulo: "", tipo: "Casa", operacion: "Venta", precio: "", estado: "Disponible", habitaciones: "", banos: "", m2: "", parqueadero: "", direccion: "", clienteId: "", descripcion: "" },
+    cliente: { nombre: "", telefono: "", email: "", tipo: "Comprador", presupuesto: "", interes: "", estado: "Activo" },
+    cita: { propiedadId: "", clienteId: "", fecha: "", hora: "", tipo: "Visita", estado: "Pendiente", notas: "" },
+  };
+  const [form, setForm] = useState(modal.data ? { ...modal.data } : blank[modal.tipo]);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  return (
+    <div style={S.overlay}>
+      <div style={S.modalBox}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 24px", borderBottom: "1px solid #1e293b" }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#f1f5f9", fontFamily: "Playfair Display, serif" }}>
+            {modal.data ? "Editar" : "Nuevo"} {modal.tipo.charAt(0).toUpperCase() + modal.tipo.slice(1)}
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#64748b", fontSize: 22, cursor: "pointer" }}>✕</button>
+        </div>
+        <div style={{ padding: "20px 24px", maxHeight: "65vh", overflowY: "auto" }}>
+          {modal.tipo === "propiedad" && (
+            <div>
+              <div style={S.formGrid2}>
+                <Field label="Título *"><input style={S.input} value={form.titulo} onChange={e => set("titulo", e.target.value)} placeholder="Ej: Casa en Zona Norte" /></Field>
+                <Field label="Tipo"><select style={S.input} value={form.tipo} onChange={e => set("tipo", e.target.value)}>{TIPOS_PROP.map(t => <option key={t}>{t}</option>)}</select></Field>
+                <Field label="Operación"><select style={S.input} value={form.operacion} onChange={e => set("operacion", e.target.value)}>{["Venta","Arriendo"].map(t => <option key={t}>{t}</option>)}</select></Field>
+                <Field label="Precio *"><input style={S.input} type="number" value={form.precio} onChange={e => set("precio", e.target.value)} /></Field>
+                <Field label="Estado"><select style={S.input} value={form.estado} onChange={e => set("estado", e.target.value)}>{ESTADOS_PROP.map(t => <option key={t}>{t}</option>)}</select></Field>
+                <Field label="m²"><input style={S.input} type="number" value={form.m2} onChange={e => set("m2", e.target.value)} /></Field>
+                <Field label="Habitaciones"><input style={S.input} type="number" value={form.habitaciones} onChange={e => set("habitaciones", e.target.value)} /></Field>
+                <Field label="Baños"><input style={S.input} type="number" value={form.banos} onChange={e => set("banos", e.target.value)} /></Field>
+                <Field label="Parqueaderos"><input style={S.input} type="number" value={form.parqueadero} onChange={e => set("parqueadero", e.target.value)} /></Field>
+                <Field label="Cliente asociado"><select style={S.input} value={form.clienteId} onChange={e => set("clienteId", +e.target.value)}><option value="">Sin cliente</option>{clientes.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></Field>
+              </div>
+              <Field label="Dirección"><input style={S.input} value={form.direccion} onChange={e => set("direccion", e.target.value)} placeholder="Calle, número, sector" /></Field>
+              <Field label="Descripción"><textarea style={{ ...S.input, height: 80, resize: "vertical" }} value={form.descripcion} onChange={e => set("descripcion", e.target.value)} /></Field>
+            </div>
+          )}
+          {modal.tipo === "cliente" && (
+            <div style={S.formGrid2}>
+              <Field label="Nombre completo *"><input style={S.input} value={form.nombre} onChange={e => set("nombre", e.target.value)} /></Field>
+              <Field label="Teléfono *"><input style={S.input} value={form.telefono} onChange={e => set("telefono", e.target.value)} /></Field>
+              <Field label="Email"><input style={S.input} value={form.email} onChange={e => set("email", e.target.value)} /></Field>
+              <Field label="Tipo"><select style={S.input} value={form.tipo} onChange={e => set("tipo", e.target.value)}>{TIPOS_CLI.map(t => <option key={t}>{t}</option>)}</select></Field>
+              <Field label="Presupuesto"><input style={S.input} type="number" value={form.presupuesto} onChange={e => set("presupuesto", e.target.value)} /></Field>
+              <Field label="¿Qué busca?"><input style={S.input} value={form.interes} onChange={e => set("interes", e.target.value)} placeholder="Casa 3 hab. zona norte" /></Field>
+              <Field label="Estado"><select style={S.input} value={form.estado} onChange={e => set("estado", e.target.value)}>{["Activo","Inactivo","Cerrado"].map(t => <option key={t}>{t}</option>)}</select></Field>
+            </div>
+          )}
+          {modal.tipo === "cita" && (
+            <div style={S.formGrid2}>
+              <Field label="Propiedad *"><select style={S.input} value={form.propiedadId} onChange={e => set("propiedadId", +e.target.value)}><option value="">Seleccionar...</option>{props.map(p => <option key={p.id} value={p.id}>{p.titulo}</option>)}</select></Field>
+              <Field label="Cliente *"><select style={S.input} value={form.clienteId} onChange={e => set("clienteId", +e.target.value)}><option value="">Seleccionar...</option>{clientes.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></Field>
+              <Field label="Fecha *"><input style={S.input} type="date" value={form.fecha} onChange={e => set("fecha", e.target.value)} /></Field>
+              <Field label="Hora"><input style={S.input} type="time" value={form.hora} onChange={e => set("hora", e.target.value)} /></Field>
+              <Field label="Tipo"><select style={S.input} value={form.tipo} onChange={e => set("tipo", e.target.value)}>{TIPOS_CITA.map(t => <option key={t}>{t}</option>)}</select></Field>
+              <Field label="Estado"><select style={S.input} value={form.estado} onChange={e => set("estado", e.target.value)}>{["Pendiente","Confirmada","Cancelada"].map(t => <option key={t}>{t}</option>)}</select></Field>
+              <div style={{ gridColumn: "1/-1" }}>
+                <Field label="Notas"><textarea style={{ ...S.input, height: 70 }} value={form.notas} onChange={e => set("notas", e.target.value)} /></Field>
+              </div>
+            </div>
+          )}
+        </div>
+        <div style={{ padding: "16px 24px", borderTop: "1px solid #1e293b", display: "flex", justifyContent: "flex-end", gap: 10 }}>
+          <button onClick={onClose} style={S.btnGhost}>Cancelar</button>
+          <button className="btn-primary" style={S.btnPrimary} onClick={() => onSave(modal.tipo, form)}>Guardar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return <div style={{ marginBottom: 14 }}><label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</label>{children}</div>;
+}
+
+function PrintFicha({ prop, cliente }) {
+  if (!prop) return null;
+  return (
+    <div style={{ fontFamily: "Georgia, serif", padding: 40, maxWidth: 700, margin: "0 auto", color: "#000" }}>
+      <div style={{ textAlign: "center", borderBottom: "3px solid #1e3a5f", paddingBottom: 20, marginBottom: 24 }}>
+        {prop.fotos?.length > 0
+          ? <img src={prop.fotos[0]} alt="" style={{ width: 120, height: 90, objectFit: "cover", borderRadius: 8, marginBottom: 12 }} />
+          : <div style={{ fontSize: 48 }}>🏠</div>}
+        <h1 style={{ fontSize: 28, margin: "10px 0 4px", color: "#0f172a" }}>{prop.titulo}</h1>
+        <div style={{ fontSize: 15, color: "#475569" }}>{prop.tipo} en {prop.operacion} · {prop.estado}</div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
+        {[["📍 Dirección", prop.direccion], ["💰 Precio", `$${Number(prop.precio).toLocaleString()}${prop.operacion === "Arriendo" ? "/mes" : ""}`], ["📐 Área", `${prop.m2}m²`], ["🛏 Habitaciones", prop.habitaciones], ["🚿 Baños", prop.banos], ["🚗 Parqueaderos", prop.parqueadero], ...(cliente ? [["👤 Cliente", cliente.nombre], ["📞 Teléfono", cliente.telefono]] : [])].map(([k, v]) => (
+          <div key={k} style={{ background: "#f8fafc", padding: "12px 16px", borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700, marginBottom: 4 }}>{k}</div>
+            <div style={{ fontWeight: 600, color: "#0f172a" }}>{v || "—"}</div>
+          </div>
+        ))}
+      </div>
+      {prop.descripcion && <div style={{ background: "#f1f5f9", padding: 16, borderRadius: 8, marginBottom: 20, fontSize: 14, color: "#374151", lineHeight: 1.7 }}>{prop.descripcion}</div>}
+      {prop.fotos?.length > 1 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, marginBottom: 10, color: "#0f172a" }}>Galería de fotos</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {prop.fotos.slice(0, 6).map((f, i) => <img key={i} src={f} style={{ width: 100, height: 70, objectFit: "cover", borderRadius: 6 }} />)}
+          </div>
+        </div>
+      )}
+      <div style={{ textAlign: "center", fontSize: 12, color: "#94a3b8", borderTop: "1px solid #e2e8f0", paddingTop: 16 }}>
+        InmoGestión PRO · Generado el {new Date().toLocaleDateString("es-ES")}
+      </div>
+    </div>
+  );
+}
+
+// ── ESTILOS ──────────────────────────────────────────────────────
+const S = {
+  app: { display: "flex", minHeight: "100vh", background: "#0a0f1e", fontFamily: "'DM Sans', sans-serif", color: "#e2e8f0" },
+  sidebar: { width: 230, minWidth: 230, background: "#070d1a", borderRight: "1px solid #0f172a", display: "flex", flexDirection: "column", padding: "0 0 20px" },
+  logo: { display: "flex", alignItems: "center", gap: 12, padding: "22px 18px 18px", borderBottom: "1px solid #0f172a" },
+  logoMark: { fontSize: 30, background: "linear-gradient(135deg,#1e3a5f,#2d5a8e)", borderRadius: 10, width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center" },
+  logoName: { fontWeight: 800, fontSize: 17, color: "#f1f5f9", fontFamily: "Playfair Display, serif" },
+  logoPro: { fontSize: 10, color: "#334155", marginTop: 2, letterSpacing: 0.5 },
+  navSection: { padding: "16px 10px 0" },
+  navLabel: { fontSize: 10, fontWeight: 700, color: "#1e3a5f", letterSpacing: 1.5, padding: "0 8px 8px", textTransform: "uppercase" },
+  navBtn: { display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 12px", borderRadius: 8, border: "none", background: "none", color: "#64748b", cursor: "pointer", fontSize: 13.5, fontWeight: 500, textAlign: "left", position: "relative" },
+  navActive: { background: "#0f2744", color: "#60a5fa", fontWeight: 700 },
+  navIcon: { fontSize: 16, width: 20, textAlign: "center" },
+  navBadge: { marginLeft: "auto", background: "#ef4444", color: "#fff", fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 10 },
+  sideStats: { margin: "auto 14px 0", background: "#0f172a", borderRadius: 10, padding: "12px 14px", display: "flex", gap: 0, alignItems: "center" },
+  sideStatItem: { flex: 1, textAlign: "center" },
+  sideStatNum: { fontSize: 22, fontWeight: 800, color: "#3b82f6", fontFamily: "Playfair Display, serif" },
+  sideStatLbl: { fontSize: 10, color: "#334155", display: "block", marginTop: 2 },
+  sideStatDiv: { width: 1, height: 30, background: "#1e293b" },
+  main: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
+  topbar: { background: "#070d1a", borderBottom: "1px solid #0f172a", padding: "18px 28px", display: "flex", justifyContent: "space-between", alignItems: "center" },
+  pageTitle: { fontSize: 22, fontWeight: 800, color: "#f1f5f9", fontFamily: "Playfair Display, serif" },
+  pageSub: { fontSize: 12, color: "#334155", marginTop: 3, textTransform: "capitalize" },
+  search: { padding: "8px 14px", borderRadius: 8, border: "1px solid #1e293b", background: "#0f172a", color: "#e2e8f0", fontSize: 13, outline: "none", width: 200 },
+  btnPrimary: { padding: "9px 18px", borderRadius: 8, border: "none", background: "#2563eb", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 },
+  btnGhost: { padding: "9px 18px", borderRadius: 8, border: "1px solid #1e293b", background: "none", color: "#64748b", fontWeight: 600, cursor: "pointer", fontSize: 13 },
+  btnDanger: { padding: "9px 14px", borderRadius: 8, border: "1px solid #7f1d1d", background: "none", color: "#ef4444", fontWeight: 600, cursor: "pointer", fontSize: 13 },
+  btnSm: { padding: "5px 12px", borderRadius: 6, border: "1px solid #1e293b", background: "none", color: "#94a3b8", cursor: "pointer", fontSize: 12 },
+  btnBack: { padding: "8px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0f172a", color: "#60a5fa", cursor: "pointer", fontWeight: 600, fontSize: 13 },
+  linkBtn: { background: "none", border: "none", color: "#3b82f6", cursor: "pointer", fontSize: 13, fontWeight: 600 },
+  content: { flex: 1, padding: 24, overflowY: "auto" },
+  notif: { position: "fixed", top: 20, right: 24, padding: "12px 22px", borderRadius: 10, color: "#fff", fontWeight: 700, zIndex: 9999, fontSize: 13 },
+  kpiGrid: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 22 },
+  kpi: { background: "#070d1a", borderRadius: 12, padding: "20px 22px", border: "1px solid #0f172a" },
+  kpiVal: { fontSize: 34, fontWeight: 900, marginTop: 8, fontFamily: "Playfair Display, serif" },
+  kpiLabel: { fontSize: 13, color: "#64748b", marginTop: 4, fontWeight: 600 },
+  kpiSub: { fontSize: 11, color: "#334155", marginTop: 2 },
+  dashRow: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginBottom: 18 },
+  dashCard: { background: "#070d1a", borderRadius: 12, padding: 22, border: "1px solid #0f172a" },
+  cardHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  cardTitle: { fontWeight: 700, fontSize: 15, color: "#e2e8f0" },
+  listRow: { display: "flex", alignItems: "center", gap: 14, padding: "10px 0", borderBottom: "1px solid #0f172a", cursor: "pointer" },
+  listTitle: { fontWeight: 600, fontSize: 14, color: "#e2e8f0" },
+  listSub: { fontSize: 12, color: "#475569", marginTop: 2 },
+  pill: { display: "inline-block", padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700 },
+  precio: { fontSize: 13, fontWeight: 800, color: "#3b82f6", marginTop: 4, display: "block", textAlign: "right" },
+  fechaBadge: { width: 44, background: "#0f172a", borderRadius: 8, padding: "6px 4px", textAlign: "center", border: "1px solid #1e293b" },
+  fechaDia: { fontSize: 18, fontWeight: 900, color: "#f1f5f9" },
+  fechaMes: { fontSize: 9, color: "#475569", fontWeight: 700, textTransform: "uppercase" },
+  filterBtn: { padding: "6px 14px", borderRadius: 20, border: "1px solid #1e293b", background: "none", color: "#64748b", cursor: "pointer", fontSize: 12, fontWeight: 600 },
+  propGrid: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 18 },
+  propCard: { background: "#070d1a", borderRadius: 14, overflow: "hidden", border: "1px solid #0f172a", cursor: "pointer" },
+  propBanner: { height: 160, display: "flex", alignItems: "center", justifyContent: "center", position: "relative" },
+  propEstado: { position: "absolute", top: 10, right: 10, color: "#fff", fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20 },
+  propOp: { position: "absolute", top: 10, left: 10, color: "#fff", fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20 },
+  propBody: { padding: 16 },
+  propTit: { fontWeight: 800, fontSize: 15, color: "#f1f5f9", marginBottom: 4 },
+  propAddr: { fontSize: 12, color: "#475569", marginBottom: 10 },
+  propTags: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 },
+  tag: { background: "#0f172a", border: "1px solid #1e293b", borderRadius: 6, padding: "3px 8px", fontSize: 11, color: "#64748b" },
+  propBottom: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  propPrecio: { fontSize: 18, fontWeight: 900, color: "#60a5fa" },
+  viewBtn: { fontSize: 12, color: "#3b82f6", fontWeight: 600 },
+  cliGrid: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16 },
+  cliCard: { background: "#070d1a", borderRadius: 12, padding: 20, border: "1px solid #0f172a", cursor: "pointer" },
+  citasGrid: { display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 },
+  detalleGrid: { display: "grid", gridTemplateColumns: "1fr 2fr", gap: 20 },
+  avatar: { width: 42, height: 42, borderRadius: "50%", background: "linear-gradient(135deg,#1e3a5f,#2d5a8e)", color: "#60a5fa", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 18, flexShrink: 0 },
+  notaItem: { background: "#0f172a", borderRadius: 8, padding: "10px 14px", marginBottom: 8, borderLeft: "3px solid #1e3a5f" },
+  overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 },
+  modalBox: { background: "#070d1a", borderRadius: 16, width: "100%", maxWidth: 640, maxHeight: "90vh", overflow: "auto", border: "1px solid #1e293b" },
+  formGrid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" },
+  input: { width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #1e293b", background: "#0f172a", color: "#e2e8f0", fontSize: 13, outline: "none", boxSizing: "border-box" },
+};
+
+const CSS = `
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0f1e; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #0f172a; } ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .card-hover:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(0,0,0,0.3) !important; transition: all 0.2s; }
+  .nav-btn:hover { background: #1e3a5f !important; color: #93c5fd !important; }
+  .btn-primary:hover { background: #1d4ed8 !important; }
+  .foto-thumb:hover .foto-del { display: flex !important; }
+  @media print { .no-print { display: none !important; } .print-only { display: block !important; } }
+`;
